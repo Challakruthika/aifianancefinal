@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sklearn
 
-st.write("scikit-learn version:", sklearn.__version__)
+
 import sys
 import os
 # Add project root to sys.path for module imports
