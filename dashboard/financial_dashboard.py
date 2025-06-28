@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.bank_statement_parser import BankStatementParser
 import numpy as np
 import joblib
+import sklearn
 
 from models.financial_models import CustomerFinancialAnalyzer
 from data.sample_customers import get_all_sample_customers
@@ -705,6 +706,8 @@ def main():
     
     st.title("🏦 Banker's Financial Insights Dashboard")
     st.markdown("### Comprehensive Customer Analysis for Informed Banking Decisions")
+    
+    st.write('scikit-learn version:', sklearn.__version__)
     
     dashboard = FinancialDashboard()
     
