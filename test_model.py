@@ -6,6 +6,8 @@ Test script to demonstrate the Banker's Financial Insights Model
 import sys
 import os
 from pathlib import Path
+import pandas as pd
+import joblib
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -186,6 +188,104 @@ def test_credit_score_calculation():
         rating = analyzer._get_credit_rating(credit_score)
         print(f"{scenario['name']}: {credit_score} ({rating})")
 
+def test_ml_model():
+    """Test the ML model with new rule-based features"""
+    print("Testing ML model with rule-based features...")
+    
+    # Load the model
+    try:
+        model = joblib.load('models/loan_approval_model.pkl')
+        print("✅ ML model loaded successfully")
+    except Exception as e:
+        print(f"❌ Error loading ML model: {e}")
+        return
+    
+    # Load synthetic data to test
+    try:
+        data = pd.read_csv('models/synthetic_customers.csv')
+        print(f"✅ Loaded {len(data)} synthetic customers")
+    except Exception as e:
+        print(f"❌ Error loading synthetic data: {e}")
+        return
+    
+    # Test feature columns
+    feature_cols = [
+        'monthly_income', 'monthly_expenses', 'savings_balance', 'investment_balance',
+        'total_debt', 'payment_history_score', 'credit_utilization_ratio', 'credit_age_months',
+        'credit_score', 'risk_score', 'financial_health_score'
+    ]
+    
+    missing_features = [col for col in feature_cols if col not in data.columns]
+    if missing_features:
+        print(f"❌ Missing features in data: {missing_features}")
+        return
+    else:
+        print("✅ All required features present in data")
+    
+    # Test prediction on a few samples
+    X_test = data[feature_cols].head(5)
+    print("\nTesting predictions on 5 samples:")
+    print("Features used:", feature_cols)
+    
+    # Test a mix of approved and rejected samples
+    approved_samples = data[data['loan_approved'] == 1].head(3)
+    rejected_samples = data[data['loan_approved'] == 0].head(2)
+    test_samples = pd.concat([approved_samples, rejected_samples])
+    
+    for i, (_, row) in enumerate(test_samples.iterrows()):
+        prediction = model.predict([row[feature_cols]])[0]
+        probability = model.predict_proba([row[feature_cols]])[0]
+        prob_approved = probability[1] if len(probability) > 1 else probability[0]
+        
+        print(f"\nSample {i+1} (Actual: {'APPROVED' if row['loan_approved'] == 1 else 'REJECTED'}):")
+        print(f"  Credit Score: {row['credit_score']}")
+        print(f"  Risk Score: {row['risk_score']}")
+        print(f"  Financial Health Score: {row['financial_health_score']}")
+        print(f"  Prediction: {'APPROVED' if prediction == 1 else 'REJECTED'}")
+        print(f"  Confidence: {prob_approved:.1%}")
+        print(f"  Correct: {'✅' if prediction == row['loan_approved'] else '❌'}")
+    
+    # Test with analyzer to ensure rule-based features are computed correctly
+    print("\n\nTesting rule-based feature computation...")
+    analyzer = CustomerFinancialAnalyzer()
+    
+    # Test with one sample
+    sample_customer = data.iloc[0].to_dict()
+    customer_data = {
+        'monthly_income': sample_customer['monthly_income'],
+        'monthly_expenses': sample_customer['monthly_expenses'],
+        'savings_balance': sample_customer['savings_balance'],
+        'investment_balance': sample_customer['investment_balance'],
+        'total_debt': sample_customer['total_debt'],
+        'payment_history_score': sample_customer['payment_history_score'],
+        'credit_utilization_ratio': sample_customer['credit_utilization_ratio'],
+        'credit_age_months': sample_customer['credit_age_months']
+    }
+    
+    computed_credit_score = analyzer.calculate_credit_score(customer_data)
+    computed_risk_score = analyzer.assess_risk_level(customer_data)['risk_score']
+    computed_health_score = analyzer.calculate_financial_health_indicators(customer_data)['financial_health_score']
+    
+    print(f"Computed Credit Score: {computed_credit_score}")
+    print(f"Computed Risk Score: {computed_risk_score}")
+    print(f"Computed Financial Health Score: {computed_health_score}")
+    print(f"Stored Credit Score: {sample_customer['credit_score']}")
+    print(f"Stored Risk Score: {sample_customer['risk_score']}")
+    print(f"Stored Financial Health Score: {sample_customer['financial_health_score']}")
+    
+    # Check if they match (allowing for small differences due to rounding)
+    credit_match = abs(computed_credit_score - sample_customer['credit_score']) <= 1
+    risk_match = computed_risk_score == sample_customer['risk_score']
+    health_match = abs(computed_health_score - sample_customer['financial_health_score']) <= 1
+    
+    if credit_match and risk_match and health_match:
+        print("✅ Rule-based features computed correctly")
+    else:
+        print("❌ Rule-based features don't match")
+        print(f"Credit score match: {credit_match}")
+        print(f"Risk score match: {risk_match}")
+        print(f"Health score match: {health_match}")
+
 def main():
     """Run all tests"""
     print("🏦 Banker's Financial Insights Model - Test Suite")
@@ -195,6 +295,7 @@ def main():
         test_single_customer()
         test_multiple_customers()
         test_credit_score_calculation()
+        test_ml_model()
         
         print("\n✅ All tests completed successfully!")
         print("\n💡 Next steps:")

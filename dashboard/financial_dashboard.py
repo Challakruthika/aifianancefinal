@@ -5,11 +5,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sys
 import os
+# Add project root to sys.path for module imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.bank_statement_parser import BankStatementParser
 import numpy as np
-
-# Add parent directory to path to import our models
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import joblib
 
 from models.financial_models import CustomerFinancialAnalyzer
 from data.sample_customers import get_all_sample_customers
@@ -24,6 +24,11 @@ class FinancialDashboard:
         self.analyzer = CustomerFinancialAnalyzer()
         self.customer_data = None
         self.analysis_results = []
+        # Load ML model
+        try:
+            self.ml_model = joblib.load('models/loan_approval_model.pkl')
+        except Exception:
+            self.ml_model = None
         
     def load_csv_data(self, uploaded_file):
         """Load and validate CSV customer data"""
@@ -65,24 +70,20 @@ class FinancialDashboard:
         return self.analysis_results
     
     def display_customer_overview(self):
-        """Display high-level customer overview"""
+        """Display high-level customer overview with clean, simple design"""
         if not self.analysis_results:
             return
         
         st.header("📊 Customer Portfolio Overview")
         
-        # Create metrics
+        # Calculate key metrics
         total_customers = len(self.analysis_results)
         avg_credit_score = sum(r['credit_score'] for r in self.analysis_results) / total_customers
         avg_risk_score = sum(r['risk_assessment']['risk_score'] for r in self.analysis_results) / total_customers
+        approved_count = sum(1 for r in self.analysis_results if r['lending_recommendations']['loan_approval'])
+        approval_rate = (approved_count / total_customers) * 100
         
-        # Count risk levels
-        risk_counts = {}
-        for result in self.analysis_results:
-            risk_level = result['risk_assessment']['risk_level']
-            risk_counts[risk_level] = risk_counts.get(risk_level, 0) + 1
-        
-        # Display metrics
+        # Simple metrics display
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -95,35 +96,108 @@ class FinancialDashboard:
             st.metric("Average Risk Score", f"{avg_risk_score:.1f}")
         
         with col4:
-            approved_count = sum(1 for r in self.analysis_results if r['lending_recommendations']['loan_approval'])
-            st.metric("Loan Approvals", f"{approved_count}/{total_customers}")
+            st.metric("Approval Rate", f"{approval_rate:.1f}%")
         
-        # Risk distribution chart
-        st.subheader("Risk Level Distribution")
-        risk_df = pd.DataFrame(list(risk_counts.items()), columns=['Risk Level', 'Count'])
-        fig = px.pie(risk_df, values='Count', names='Risk Level', 
-                    title="Customer Risk Distribution",
-                    color_discrete_map={
-                        'Low': '#00FF00',
-                        'Medium': '#FFFF00', 
-                        'High': '#FFA500',
-                        'Very High': '#FF0000'
-                    })
-        st.plotly_chart(fig, use_container_width=True)
+        # Create data for charts
+        risk_counts = {}
+        health_counts = {}
+        credit_ranges = {'Poor (300-579)': 0, 'Fair (580-669)': 0, 'Good (670-739)': 0, 'Very Good (740-799)': 0, 'Excellent (800-850)': 0}
         
-        # --- Insights & Suggestions ---
-        st.markdown("---")
-        st.subheader("Insights & Suggestions")
+        for result in self.analysis_results:
+            # Risk levels
+            risk_level = result['risk_assessment']['risk_level']
+            risk_counts[risk_level] = risk_counts.get(risk_level, 0) + 1
+            
+            # Health categories
+            health_cat = result['financial_health']['health_category']
+            health_counts[health_cat] = health_counts.get(health_cat, 0) + 1
+            
+            # Credit score ranges
+            score = result['credit_score']
+            if score < 580:
+                credit_ranges['Poor (300-579)'] += 1
+            elif score < 670:
+                credit_ranges['Fair (580-669)'] += 1
+            elif score < 740:
+                credit_ranges['Good (670-739)'] += 1
+            elif score < 800:
+                credit_ranges['Very Good (740-799)'] += 1
+            else:
+                credit_ranges['Excellent (800-850)'] += 1
+        
+        # Charts section
+        st.subheader("Portfolio Analytics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Risk distribution chart
+            risk_df = pd.DataFrame(list(risk_counts.items()), columns=['Risk Level', 'Count'])
+            fig = px.pie(risk_df, values='Count', names='Risk Level', 
+                        title="Risk Level Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Financial health distribution
+            health_df = pd.DataFrame(list(health_counts.items()), columns=['Health Category', 'Count'])
+            fig = px.bar(health_df, x='Health Category', y='Count',
+                        title="Financial Health Distribution")
+            fig.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col3:
+            # Credit score distribution
+            credit_df = pd.DataFrame(list(credit_ranges.items()), columns=['Credit Range', 'Count'])
+            fig = px.bar(credit_df, x='Credit Range', y='Count',
+                        title="Credit Score Distribution")
+            fig.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Insights section
+        st.subheader("Portfolio Insights")
+        
         if avg_credit_score < 600:
             st.warning("Average credit score is low. Consider focusing on credit-building products or stricter lending criteria.")
-        else:
+        elif avg_credit_score >= 700:
             st.success("Average credit score is healthy. Portfolio is well-positioned for lending.")
+        else:
+            st.info("Average credit score is acceptable. Monitor credit trends.")
+        
         if avg_risk_score > 4:
             st.error("Portfolio risk is high. Review risk management strategies.")
-        if approved_count / total_customers < 0.3:
-            st.info("Loan approval rate is low. Consider reviewing approval criteria or expanding target segments.")
-        elif approved_count / total_customers > 0.7:
-            st.info("High loan approval rate. Ensure risk controls are adequate.")
+        elif avg_risk_score <= 2:
+            st.success("Portfolio has low risk profile. Consider expanding lending criteria.")
+        else:
+            st.info("Portfolio risk is manageable. Continue monitoring.")
+        
+        if approval_rate < 30:
+            st.warning("Approval rate is low. Review approval criteria or target segments.")
+        elif approval_rate > 70:
+            st.info("High approval rate. Ensure risk controls are adequate.")
+        else:
+            st.success("Approval rate is well-balanced. Portfolio is performing well.")
+        
+        # Portfolio summary
+        st.subheader("Portfolio Summary")
+        
+        total_income = sum(r['key_metrics']['monthly_income'] for r in self.analysis_results)
+        total_expenses = sum(r['key_metrics']['monthly_expenses'] for r in self.analysis_results)
+        total_savings = sum(r['key_metrics']['savings_balance'] for r in self.analysis_results)
+        total_debt = sum(r['key_metrics']['total_debt'] for r in self.analysis_results)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Monthly Income", f"₹{total_income:,.0f}")
+        
+        with col2:
+            st.metric("Total Monthly Expenses", f"₹{total_expenses:,.0f}")
+        
+        with col3:
+            st.metric("Total Savings", f"₹{total_savings:,.0f}")
+        
+        with col4:
+            st.metric("Total Debt", f"₹{total_debt:,.0f}")
     
     def display_credit_score_analysis(self):
         """Display credit score analysis"""
@@ -251,7 +325,7 @@ class FinancialDashboard:
                         'Customer': r['customer_name'],
                         'Credit Score': r['credit_score'],
                         'Risk Level': r['risk_assessment']['risk_level'],
-                        'Recommended Amount': f"${r['lending_recommendations']['recommended_loan_amount']:,.0f}",
+                        'Recommended Amount': f"₹{r['lending_recommendations']['recommended_loan_amount']:,.0f}",
                         'Interest Rate': r['lending_recommendations']['interest_rate_range']
                     }
                     for r in approved_customers
@@ -332,11 +406,11 @@ class FinancialDashboard:
                 # Key metrics
                 st.subheader("Key Financial Metrics")
                 metrics = customer_result['key_metrics']
-                st.write(f"**Monthly Income:** ${metrics['monthly_income']:,.0f}")
-                st.write(f"**Monthly Expenses:** ${metrics['monthly_expenses']:,.0f}")
-                st.write(f"**Total Debt:** ${metrics['total_debt']:,.0f}")
-                st.write(f"**Savings Balance:** ${metrics['savings_balance']:,.0f}")
-                st.write(f"**Investment Balance:** ${metrics['investment_balance']:,.0f}")
+                st.write(f"**Monthly Income:** ₹{metrics['monthly_income']:,.0f}")
+                st.write(f"**Monthly Expenses:** ₹{metrics['monthly_expenses']:,.0f}")
+                st.write(f"**Total Debt:** ₹{metrics['total_debt']:,.0f}")
+                st.write(f"**Savings Balance:** ₹{metrics['savings_balance']:,.0f}")
+                st.write(f"**Investment Balance:** ₹{metrics['investment_balance']:,.0f}")
             
             with col2:
                 # Financial health indicators
@@ -346,14 +420,14 @@ class FinancialDashboard:
                 st.write(f"**Savings Rate:** {health['savings_rate']:.1%}")
                 st.write(f"**Debt-to-Income Ratio:** {health['debt_to_income_ratio']:.1%}")
                 st.write(f"**Investment Ratio:** {health['investment_ratio']:.1%}")
-                st.write(f"**Net Worth:** ${health['net_worth']:,.0f}")
+                st.write(f"**Net Worth:** ₹{health['net_worth']:,.0f}")
                 
                 # Lending recommendations
                 st.subheader("Lending Decision")
                 lending = customer_result['lending_recommendations']
                 if lending['loan_approval']:
                     st.success("✅ **APPROVED**")
-                    st.write(f"**Recommended Amount:** ${lending['recommended_loan_amount']:,.0f}")
+                    st.write(f"**Recommended Amount:** ₹{lending['recommended_loan_amount']:,.0f}")
                     st.write(f"**Interest Rate Range:** {lending['interest_rate_range']}")
                 else:
                     st.error("❌ **REJECTED**")
@@ -452,6 +526,70 @@ class FinancialDashboard:
         else:
             st.info("Customer is in a moderate segment. Review full profile before proceeding.")
     
+    def display_ml_prediction_tab(self):
+        if not self.analysis_results:
+            return
+        import streamlit as st
+        import plotly.graph_objects as go
+        st.header("🤖 ML Model Loan Approval Prediction")
+        st.markdown("""
+        This page uses a machine learning model to predict loan approval for each customer based on their financial profile. 
+        The model considers income, expenses, savings, debt, credit history, and rule-based scores (credit score, risk score, financial health score). 
+        Use this as a data-driven second opinion alongside rule-based recommendations.
+        """)
+        customer_options = [f"{r['customer_name']} ({r['customer_id']})" for r in self.analysis_results]
+        selected_customer = st.selectbox("Select Customer for ML Prediction", customer_options)
+        if selected_customer:
+            customer_id = selected_customer.split("(")[-1].split(")")[0]
+            customer_result = next(r for r in self.analysis_results if r['customer_id'] == customer_id)
+            
+            # Combine key metrics with rule-based scores for ML prediction
+            ml_input = customer_result['key_metrics'].copy()
+            ml_input['credit_score'] = customer_result['credit_score']
+            ml_input['risk_score'] = customer_result['risk_assessment']['risk_score']
+            ml_input['financial_health_score'] = customer_result['financial_health']['financial_health_score']
+            
+            ml_pred, ml_prob = self.predict_loan_approval_ml(ml_input)
+            st.subheader("ML Model Prediction Result")
+            if ml_pred is not None:
+                if ml_pred == 1:
+                    st.success(f"Loan Approved ({ml_prob:.0%} confidence)")
+                else:
+                    st.error(f"Loan Rejected ({(1-ml_prob):.0%} confidence)")
+                # Visual confidence bar
+                st.markdown("**Prediction Confidence:**")
+                fig = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = ml_prob*100 if ml_pred == 1 else (1-ml_prob)*100,
+                    domain = {'x': [0, 1], 'y': [0, 1]},
+                    gauge = {
+                        'axis': {'range': [0, 100]},
+                        'bar': {'color': 'green' if ml_pred == 1 else 'red'},
+                        'steps': [
+                            {'range': [0, 50], 'color': '#ffe6e6' if ml_pred == 0 else '#e6ffe6'},
+                            {'range': [50, 100], 'color': '#e6ffe6' if ml_pred == 1 else '#ffe6e6'}
+                        ],
+                    },
+                    number = {'suffix': '%'}
+                ))
+                st.plotly_chart(fig, use_container_width=True)
+                # Actionable insights
+                st.markdown("---")
+                st.subheader("Actionable Insights")
+                if ml_pred == 1 and ml_prob > 0.8:
+                    st.success("This customer is a strong candidate for loan approval. Consider offering premium products or pre-approved offers.")
+                elif ml_pred == 1:
+                    st.info("Customer is likely to be approved, but review full profile for risk factors.")
+                elif ml_pred == 0 and ml_prob > 0.8:
+                    st.error("Customer is a high risk for loan rejection. Consider additional documentation or risk mitigation.")
+                else:
+                    st.warning("Customer is borderline for approval. Manual review recommended.")
+            else:
+                st.info("ML model not available or not loaded.")
+            st.markdown("---")
+            st.write("**Features used for prediction:**")
+            st.json(ml_input)
+
     def export_results(self):
         """Export analysis results to Excel"""
         if not self.analysis_results:
@@ -536,6 +674,24 @@ class FinancialDashboard:
             st.error(f"Error parsing bank statement: {str(e)}")
             return None
 
+    def predict_loan_approval_ml(self, customer):
+        if self.ml_model is None:
+            return None, None
+        feature_cols = [
+            'monthly_income', 'monthly_expenses', 'savings_balance', 'investment_balance',
+            'total_debt', 'payment_history_score', 'credit_utilization_ratio', 'credit_age_months',
+            'credit_score', 'risk_score', 'financial_health_score'
+        ]
+        X = pd.DataFrame([{col: customer.get(col, 0) for col in feature_cols}])
+        print("ML input features:", X.to_dict(orient='records')[0])  # Debug print
+        pred = self.ml_model.predict(X)[0]
+        proba = self.ml_model.predict_proba(X)[0]
+        if len(proba) == 1:
+            prob = proba[0] if pred == 0 else 1 - proba[0]
+        else:
+            prob = proba[1]
+        return pred, prob
+
 def main():
     st.set_page_config(
         page_title="Banker's Financial Insights Dashboard",
@@ -595,13 +751,14 @@ def main():
     
     if dashboard.analysis_results:
         # Create tabs for different analysis views
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Overview", 
             "💳 Credit Analysis", 
             "🏥 Financial Health", 
             "💰 Lending Decisions",
             "👤 Individual Analysis",
-            "🔍 Insights & Segmentation"
+            "🔍 Insights & Segmentation",
+            "🤖 ML Prediction"
         ])
         
         with tab1:
@@ -621,6 +778,9 @@ def main():
         
         with tab6:
             dashboard.display_insights_and_segmentation()
+        
+        with tab7:
+            dashboard.display_ml_prediction_tab()
         
         # Export functionality
         st.sidebar.header("📤 Export Results")
