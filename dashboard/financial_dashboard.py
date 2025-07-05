@@ -309,7 +309,17 @@ class FinancialDashboard:
         
         # Portfolio summary
         st.subheader("Portfolio Summary")
-        
+
+        # Initialize totals to 0 to avoid UnboundLocalError
+        total_income = 0
+        total_expenses = 0
+        total_savings = 0
+        total_debt = 0
+        total_all = 0
+        total_debit = 0
+        total_credit = 0
+        label_sums = {}
+
         if hasattr(self, 'ml_df') and self.ml_df is not None:
             # Force mapping of DR/CR to DEBIT/CREDIT for summary calculations
             self.ml_df['Type'] = self.ml_df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
@@ -1109,6 +1119,15 @@ def main():
     
     dashboard = FinancialDashboard()
     
+    # Load BERT model and classifier at the top, so they are always defined
+    try:
+        bert_embedder = joblib.load('bert_embedder.pkl')
+        bert_clf = joblib.load('bert_classifier.pkl')
+    except Exception as e:
+        bert_embedder = None
+        bert_clf = None
+        print(f"⚠️ Could not load BERT model: {e}")
+    
     # Load enhanced model for transaction classification
     try:
         enhanced_model = joblib.load('transaction_classifier_enhanced.pkl')
@@ -1117,9 +1136,6 @@ def main():
         use_enhanced_model = True
     except Exception as e:
         print(f"⚠️ Could not load enhanced model: {e}")
-        # Fallback to BERT model
-        bert_embedder = joblib.load('bert_embedder.pkl')
-        bert_clf = joblib.load('bert_classifier.pkl')
         use_enhanced_model = False
     
     # Define savings detection function inline
@@ -1214,7 +1230,10 @@ def main():
                 df['Predicted_Label'] = final_labels
                 df['Label_Source'] = label_sources
             else:
-                # Fallback to BERT model
+                # When using bert_embedder.encode, check if bert_embedder is not None
+                if bert_embedder is None:
+                    st.error("BERT embedder model is missing. Please upload 'bert_embedder.pkl' to the app directory.")
+                    return
                 combined_text = (df['Type'].astype(str).str.upper().str.strip() + ': ' + df['Description'].astype(str).str.strip() + ' | ' + df['Merchant_Category'].astype(str).str.strip()).tolist()
                 X = bert_embedder.encode(combined_text, show_progress_bar=False)
                 model_labels = bert_clf.predict(X)
@@ -1384,7 +1403,10 @@ def main():
                             std_df['Predicted_Label'] = final_labels
                             std_df['Label_Source'] = label_sources
                         else:
-                            # Fallback to BERT model
+                            # When using bert_embedder.encode, check if bert_embedder is not None
+                            if bert_embedder is None:
+                                st.error("BERT embedder model is missing. Please upload 'bert_embedder.pkl' to the app directory.")
+                                return
                             combined_text = (std_df['Type'].astype(str).str.upper().str.strip() + ': ' + std_df['Description'].astype(str).str.strip() + ' | ' + std_df['Merchant_Category'].astype(str).str.strip()).tolist()
                             X = bert_embedder.encode(combined_text, show_progress_bar=False)
                             model_labels = bert_clf.predict(X)

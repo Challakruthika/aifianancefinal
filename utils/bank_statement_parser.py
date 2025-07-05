@@ -44,10 +44,32 @@ class BankStatementParser:
                 writer.writerow(row)
             tmp_path = tmp.name
         df = pd.read_csv(tmp_path)
-        df.columns = [col.strip() for col in df.columns]
-        print("DEBUG: Columns in uploaded CSV:", df.columns.tolist())
-        print("DEBUG: About to call _parse_icici")
-        parsed = self._parse_icici(df)
+        # Normalize column names for SBI and other banks
+        col_map = {
+            'txn date': 'date',
+            'value date': 'date',
+            'description': 'details',
+            'ref no./cheque no.': 'ref no./cheque no.',
+            'debit': 'debit',
+            'credit': 'credit',
+            'balance': 'balance'
+        }
+        df.columns = [col_map.get(col.strip().lower(), col.strip().lower()) for col in df.columns]
+        print("DEBUG: Columns in uploaded CSV after normalization:", df.columns.tolist())
+        # Detect bank type by columns and call the correct parser
+        columns = set(df.columns.str.lower())
+        if {'date', 'details', 'ref no./cheque no.', 'debit', 'credit', 'balance'}.issubset(columns):
+            print("DEBUG: Detected SBI statement, calling _parse_sbi")
+            parsed = self._parse_sbi(df)
+        elif {'date', 'instrument id', 'amount', 'type', 'balance', 'remarks'}.issubset(columns):
+            print("DEBUG: Detected PNB statement, calling _parse_pnb")
+            parsed = self._parse_pnb(df)
+        elif {'post date', 'value date', 'narration', 'cheque details', 'debit', 'credit', 'balance'}.issubset(columns):
+            print("DEBUG: Detected APGB statement, calling _parse_apgb")
+            parsed = self._parse_apgb(df)
+        else:
+            print("DEBUG: Defaulting to ICICI parser")
+            parsed = self._parse_icici(df)
         return parsed
 
     def _parse_pnb(self, df):
@@ -60,7 +82,12 @@ class BankStatementParser:
         
         monthly_income = df[df['is_credit']]['Amount'].sum()
         monthly_expenses = df[df['is_debit']]['Amount'].sum()
-        savings_balance = df['Balance'].apply(pd.to_numeric, errors='coerce').dropna().iloc[-1]
+        # Defensive check for savings_balance
+        balance_series = df['Balance'].apply(pd.to_numeric, errors='coerce').dropna()
+        if len(balance_series) > 0:
+            savings_balance = balance_series.iloc[-1]
+        else:
+            savings_balance = 0.0
         credit_age_months = self._estimate_credit_age(df['Date'])
         
         return self._standardize(
@@ -76,18 +103,26 @@ class BankStatementParser:
         df = df.dropna(subset=['Date'])
         df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0)
         df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0)
-        
-        monthly_income = df['Credit'].sum()
-        monthly_expenses = df['Debit'].sum()
-        savings_balance = df['Balance'].apply(pd.to_numeric, errors='coerce').dropna().iloc[-1]
+        # Add 'Type' column
+        def get_type(row):
+            if row['Debit'] > 0:
+                return 'DEBIT'
+            elif row['Credit'] > 0:
+                return 'CREDIT'
+            else:
+                return 'UNKNOWN'
+        df['Type'] = df.apply(get_type, axis=1)
+        # Add 'Amount' column as the nonzero value
+        df['Amount'] = df[['Debit', 'Credit']].max(axis=1)
+        # Defensive check for savings_balance
+        balance_series = df['Balance'].apply(pd.to_numeric, errors='coerce').dropna()
+        if len(balance_series) > 0:
+            savings_balance = balance_series.iloc[-1]
+        else:
+            savings_balance = 0.0
         credit_age_months = self._estimate_credit_age(df['Date'])
-        
-        return self._standardize(
-            monthly_income=monthly_income,
-            monthly_expenses=monthly_expenses,
-            savings_balance=savings_balance,
-            credit_age_months=credit_age_months
-        )
+        # Return DataFrame in expected format for downstream code
+        return df[['Date', 'Description', 'Amount', 'Type', 'Balance']]
 
     def _parse_apgb(self, df):
         # APGB: Post Date, Value Date, Narration, Cheque Details, Debit, Credit, Balance
@@ -101,7 +136,12 @@ class BankStatementParser:
         
         monthly_income = df['Credit'].sum()
         monthly_expenses = df['Debit'].sum()
-        savings_balance = df['Balance'].dropna().iloc[-1]
+        # Defensive check for savings_balance
+        balance_series = df['Balance'].dropna()
+        if len(balance_series) > 0:
+            savings_balance = balance_series.iloc[-1]
+        else:
+            savings_balance = 0.0
         credit_age_months = self._estimate_credit_age(df['Post Date'])
         
         return self._standardize(
