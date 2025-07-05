@@ -1,7 +1,12 @@
+import os
+print("BANK PARSER FILE PATH:", os.path.abspath(__file__))
 import pandas as pd
 import numpy as np
 import re
 from datetime import datetime
+import csv
+import io
+import tempfile
 
 class BankStatementParser:
     """
@@ -12,19 +17,38 @@ class BankStatementParser:
         self.customer_id = customer_id
         self.customer_name = customer_name
 
-    def parse(self, file_path):
-        df = pd.read_csv(file_path)
-        # Try to detect the format
-        if set(['Date', 'Instrument ID', 'Amount', 'Type', 'Balance', 'Remarks']).issubset(df.columns):
-            return self._parse_pnb(df)
-        elif set(['Date', 'Details', 'Ref No./Cheque No', 'Debit', 'Credit', 'Balance']).issubset(df.columns):
-            return self._parse_sbi(df)
-        elif set(['Post Date', 'Value Date', 'Narration', 'Cheque Details', 'Debit', 'Credit', 'Balance']).issubset(df.columns):
-            return self._parse_apgb(df)
-        elif set(['Date', 'Description', 'Amount', 'Type']).issubset(df.columns):
-            return self._parse_icici(df)
+    def parse(self, file_input, standardize=False):
+        print("DEBUG: Entered parse method")
+        # Support both file path and file-like object
+        if isinstance(file_input, str):
+            # file path
+            with open(file_input, 'r', encoding='utf-8') as f:
+                lines = list(csv.reader(f))
         else:
-            raise ValueError('Unknown bank statement format. Please provide a supported CSV.')
+            # file-like object (e.g., from Streamlit)
+            file_input.seek(0)
+            decoded = file_input.read()
+            if isinstance(decoded, bytes):
+                decoded = decoded.decode('utf-8')
+            lines = list(csv.reader(io.StringIO(decoded)))
+        # Find header row
+        header_row = 0
+        for i, row in enumerate(lines):
+            if 'Post Date' in row or 'Date' in row:
+                header_row = i
+                break
+        # Reconstruct CSV for pandas
+        with tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8', newline='') as tmp:
+            writer = csv.writer(tmp)
+            for row in lines[header_row:]:
+                writer.writerow(row)
+            tmp_path = tmp.name
+        df = pd.read_csv(tmp_path)
+        df.columns = [col.strip() for col in df.columns]
+        print("DEBUG: Columns in uploaded CSV:", df.columns.tolist())
+        print("DEBUG: About to call _parse_icici")
+        parsed = self._parse_icici(df)
+        return parsed
 
     def _parse_pnb(self, df):
         # PNB: Date, Instrument ID, Amount, Type (DR/CR), Balance, Remarks
@@ -88,25 +112,26 @@ class BankStatementParser:
         )
 
     def _parse_icici(self, df):
+        print("DEBUG: Entered _parse_icici")
+        print("DEBUG: ICICI DataFrame columns:", df.columns.tolist())
+        print("DEBUG: ICICI DataFrame head:\n", df.head())
         # ICICI: Date, Description, Amount, Type (DR/CR)
         df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
         df = df.dropna(subset=['Date'])
         df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
-        df['is_credit'] = df['Type'].str.upper().str.contains('CR')
-        df['is_debit'] = df['Type'].str.upper().str.contains('DR')
-        
-        monthly_income = df[df['is_credit']]['Amount'].sum()
-        monthly_expenses = df[df['is_debit']]['Amount'].sum()
-        # No balance column, so estimate from last transaction
-        savings_balance = df[df['is_credit'] | df['is_debit']]['Amount'].cumsum().iloc[-1]
-        credit_age_months = self._estimate_credit_age(df['Date'])
-        
-        return self._standardize(
-            monthly_income=monthly_income,
-            monthly_expenses=monthly_expenses,
-            savings_balance=savings_balance,
-            credit_age_months=credit_age_months
-        )
+        df['Type'] = df['Type'].str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+        if 'Balance' not in df.columns:
+            df['Balance'] = None
+        if 'Mode' not in df.columns:
+            df['Mode'] = None
+        if 'Category' not in df.columns:
+            df['Category'] = None
+        df['Category'] = df['Category'].fillna('Uncategorized')
+        print("DEBUG: Final DataFrame to dashboard:")
+        print(df.dtypes)
+        print(df.head())
+        print(df.isnull().sum())
+        return df[['Date', 'Description', 'Amount', 'Type', 'Balance', 'Mode', 'Category']]
 
     def _estimate_credit_age(self, date_series):
         if len(date_series) == 0:

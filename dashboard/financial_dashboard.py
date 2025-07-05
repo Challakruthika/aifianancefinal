@@ -5,15 +5,142 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sys
 import os
+import io
+import re
 # Add project root to sys.path for module imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.bank_statement_parser import BankStatementParser
 import numpy as np
 import joblib
 import sklearn
+from universal_bank_parser import UniversalBankStatementParser
+from sentence_transformers import SentenceTransformer
+
 
 from models.financial_models import CustomerFinancialAnalyzer
 from data.sample_customers import get_all_sample_customers
+
+# --- Merchant category mapping and extraction ---
+merchant_category_map = {
+    'amazon': 'Shopping',
+    'swiggy': 'Food Delivery',
+    'zomato': 'Food Delivery',
+    'paytm': 'Wallet/Recharge',
+    'irctc': 'Travel',
+    'uber': 'Transport',
+    'ola': 'Transport',
+    'petrol': 'Fuel',
+    'fuel': 'Fuel',
+    'salary': 'Salary',
+    'interest': 'Interest',
+    'dividend': 'Investment',
+    'mutual fund': 'Investment',
+    'fd': 'Investment',
+    'rd': 'Investment',
+    'ppf': 'Investment',
+    'lic': 'Insurance',
+    'nps': 'Investment',
+    'bonus': 'Salary',
+    'reimbursement': 'Reimbursement',
+    'refund': 'Refund',
+    'rent': 'Rent',
+    'grocery': 'Grocery',
+    'shopping': 'Shopping',
+    'food': 'Food',
+    'cashback': 'Cashback',
+    'insurance': 'Insurance',
+    'loan': 'Loan',
+    'emi': 'Loan',
+    'savings': 'Savings',
+    'closure proceeds': 'Savings',
+    'maturity proceeds': 'Savings',
+    'transfer': 'Transfer',
+    'upi': 'UPI',
+    'imps': 'IMPS',
+    'rtgs': 'RTGS',
+    'bank transfer': 'Transfer',
+    'gift': 'Gift',
+    'award': 'Award',
+    'profit': 'Investment',
+    'sale': 'Sale',
+    'cash deposit': 'Deposit',
+    'settlement': 'Settlement',
+    'arrears': 'Salary',
+    'advance': 'Advance',
+    'medical': 'Medical',
+    'consulting': 'Consulting',
+    'stipend': 'Stipend',
+    'scholarship': 'Scholarship',
+    'royalty': 'Royalty',
+    'pension': 'Pension',
+    'award': 'Award',
+    'commission': 'Commission',
+    'reversal': 'Reversal',
+    'expense claim': 'Reimbursement',
+    'final settlement': 'Settlement',
+    'self': 'Transfer',
+    'client': 'Client',
+    'employer': 'Salary',
+    'medical claim': 'Medical',
+    'insurance claim': 'Insurance',
+    'dividend payout': 'Investment',
+    'bonus received': 'Salary',
+    'profit share': 'Investment',
+    'sale proceeds': 'Sale',
+    'online transfer': 'Transfer',
+    'reimbursement credit': 'Reimbursement',
+    'expense claim': 'Reimbursement',
+    'medical claim': 'Medical',
+    'insurance claim': 'Insurance',
+    'final settlement': 'Settlement',
+    'arrears': 'Salary',
+    'advance payment': 'Advance',
+    'advance credit': 'Advance',
+}
+def extract_merchant_category(description):
+    desc = str(description).lower()
+    for keyword, category in merchant_category_map.items():
+        if keyword in desc:
+            return category
+    return 'Other'
+
+# --- Expanded keyword lists for hybrid logic ---
+income_keywords = [
+    'salary', 'opening balance', 'refund', 'reimbursement', 'interest', 'dividend', 'bonus', 'arrears', 'stipend', 'scholarship', 'royalty', 'commission', 'pension', 'award', 'profit', 'sale', 'rent received', 'credit', 'closing balance', 'incentive', 'payment from', 'received from', 'salary credit', 'salary deposit', 'salary payment', 'salary transfer', 'employer', 'consulting', 'settlement', 'reimbursement credit', 'expense claim', 'medical claim', 'insurance claim', 'final settlement', 'advance', 'arrears', 'advance payment', 'advance credit', 'cash deposit', 'online transfer', 'gift', 'award', 'profit share', 'sale proceeds', 'sale credit', 'dividend payout', 'bonus received', 'rent received', 'credited by', 'credited to', 'credited', 'credit'
+]
+savings_patterns = [
+    'closure', 'maturity', 'redemption', 'transfer to own account', 'fd closure', 'rd closure', 'fd maturity', 'rd maturity', 'mf redemption', 'sip redemption', 'ppf withdrawal', 'lic refund', 'policy maturity', 'proceeds credit', 'td closure', 'refund from mf', 'fd interest', 'rd interest', 'mutual fund redemption', 'fixed deposit maturity', 'recurring deposit maturity', 'investment proceeds', 'sip installment', 'invested in mf', 'transfer to rd', 'transfer to fd', 'transfer to ppf', 'transfer to demat', 'lic premium', 'td purchase', 'deposit to nps', 'transfer to savings', 'own account transfer', 'linked account transfer', 'sip debit', 'mutual fund purchase', 'fixed deposit opening', 'rd opening', 'ppf deposit', 'nps contribution', 'insurance premium', 'investment debit'
+]
+
+def hybrid_label_rule(row, model_label):
+    ttype = str(row['Type']).upper()
+    desc = str(row.get('Description', '')).lower()
+    # 1. Force Income for strong income keywords
+    if any(kw in desc for kw in income_keywords):
+        return 'Income', 'Rule-Income-Keyword'
+    # 2. Only allow Savings if strong savings pattern
+    if model_label == 'Savings':
+        if any(pat in desc for pat in savings_patterns):
+            return 'Savings', 'Rule-Savings-Pattern'
+        else:
+            # If not a strong savings pattern, fallback to Expense or Income
+            if ttype == 'CREDIT':
+                return 'Income', 'Rule-Income-Override'
+            else:
+                return 'Expense', 'Rule-Expense-Override'
+    # 3. Type-based fallback
+    if ttype == 'CREDIT':
+        if model_label == 'Expense':
+            return 'Income', 'Rule-Income-Override'
+        else:
+            return model_label, 'Model'
+    elif ttype == 'DEBIT':
+        if model_label == 'Income':
+            return 'Expense', 'Rule-Expense-Override'
+        else:
+            return model_label, 'Model'
+    else:
+        return model_label, 'Model'
 
 class FinancialDashboard:
     """
@@ -64,6 +191,8 @@ class FinancialDashboard:
         
         for i, customer in enumerate(customers):
             summary = self.analyzer.create_customer_summary(customer)
+            # Merge original customer fields into summary at top level
+            summary.update(customer)
             self.analysis_results.append(summary)
             progress_bar.progress((i + 1) / len(customers))
         
@@ -181,24 +310,83 @@ class FinancialDashboard:
         # Portfolio summary
         st.subheader("Portfolio Summary")
         
-        total_income = sum(r['key_metrics']['monthly_income'] for r in self.analysis_results)
-        total_expenses = sum(r['key_metrics']['monthly_expenses'] for r in self.analysis_results)
-        total_savings = sum(r['key_metrics']['savings_balance'] for r in self.analysis_results)
-        total_debt = sum(r['key_metrics']['total_debt'] for r in self.analysis_results)
+        if hasattr(self, 'ml_df') and self.ml_df is not None:
+            # Force mapping of DR/CR to DEBIT/CREDIT for summary calculations
+            self.ml_df['Type'] = self.ml_df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+            # Detect label column
+            label_col = None
+            for col in ['Predicted_Label', 'Label']:
+                if col in self.ml_df.columns:
+                    label_col = col
+                    break
+            if label_col is None:
+                st.error('No label column (Predicted_Label or Label) found in uploaded data!')
+                return
+            # Ensure Amount is numeric
+            self.ml_df['Amount'] = pd.to_numeric(self.ml_df['Amount'], errors='coerce')
+            # Normalize label values
+            self.ml_df[label_col] = self.ml_df[label_col].astype(str).str.strip().str.upper()
+            st.write(f"[DEBUG] Unique values in Type column: {self.ml_df['Type'].unique()}")
+            st.write(f"[DEBUG] Label column: {label_col}")
+            st.write(f"[DEBUG] Label value counts: {self.ml_df[label_col].value_counts().to_dict()}")
+            # Debug: show sum for each unique label
+            label_sums = self.ml_df.groupby(label_col)['Amount'].sum().to_dict()
+            st.write(f"[DEBUG] Amount sum by label: {label_sums}")
+            # Extra debug: show first 5 rows labeled as SAVINGS
+            savings_rows = self.ml_df[self.ml_df[label_col] == 'SAVINGS']
+            st.write(f"[DEBUG] First 5 SAVINGS rows:")
+            st.write(savings_rows.head())
+
+            total_income = self.ml_df.loc[self.ml_df[label_col] == 'INCOME', 'Amount'].sum()
+            total_expenses = self.ml_df.loc[self.ml_df[label_col] == 'EXPENSE', 'Amount'].sum()
+            total_savings = self.ml_df.loc[self.ml_df[label_col] == 'SAVINGS', 'Amount'].sum()
+            total_debt = self.ml_df.loc[self.ml_df[label_col] == 'DEBT', 'Amount'].sum()
+            total_all = self.ml_df['Amount'].sum()
+            total_debit = self.ml_df.loc[self.ml_df['Type'] == 'DEBIT', 'Amount'].sum()
+            total_credit = self.ml_df.loc[self.ml_df['Type'] == 'CREDIT', 'Amount'].sum()
         
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Monthly Income", f"₹{total_income:,.0f}")
+            st.metric("Total Income (CSV)", f"₹{total_income:,.0f}")
         
         with col2:
-            st.metric("Total Monthly Expenses", f"₹{total_expenses:,.0f}")
+            st.metric("Total Expenses (CSV)", f"₹{total_expenses:,.0f}")
         
         with col3:
-            st.metric("Total Savings", f"₹{total_savings:,.0f}")
+            st.metric("Total Savings (CSV)", f"₹{total_savings:,.0f}")
         
         with col4:
             st.metric("Total Debt", f"₹{total_debt:,.0f}")
+        
+        # Add a second row for raw totals
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            st.metric("Total Amount (All Transactions)", f"₹{total_all:,.0f}")
+        with col6:
+            st.metric("Total Debit (CSV)", f"₹{total_debit:,.0f}")
+        with col7:
+            st.metric("Total Credit (CSV)", f"₹{total_credit:,.0f}")
+        
+        # Add a bar chart for Income, Expense, Savings
+        chart_labels = []
+        chart_values = []
+        for label in ['INCOME', 'EXPENSE', 'SAVINGS']:
+            if label in label_sums:
+                chart_labels.append(label)
+                chart_values.append(label_sums[label])
+        if chart_labels:
+            fig = go.Figure([go.Bar(x=chart_labels, y=chart_values, marker_color=['green', 'red', 'blue'])])
+            fig.update_layout(title="Total by Category", xaxis_title="Category", yaxis_title="Total Amount (₹)")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Show a table of all transactions and their predicted labels for review
+        if hasattr(self, 'ml_df') and self.ml_df is not None:
+            st.subheader("All Transactions with Predicted Category")
+            st.dataframe(self.ml_df[['Date', 'Description', 'Amount', 'Type', 'Predicted_Label']])
+            # Export button for manual labeling
+            csv_export = self.ml_df[['Date', 'Description', 'Amount', 'Type', 'Predicted_Label']].to_csv(index=False)
+            st.download_button("Export Transactions for Labeling", data=csv_export, file_name="transactions_for_labeling.csv", mime="text/csv")
     
     def display_credit_score_analysis(self):
         """Display credit score analysis"""
@@ -361,21 +549,21 @@ class FinancialDashboard:
                 st.info("All customers approved for loans")
         
         # --- Insights & Suggestions ---
-        st.markdown("---")
-        st.subheader("Insights & Suggestions")
-        approved_customers = [r for r in self.analysis_results if r['lending_recommendations']['loan_approval']]
-        rejected_customers = [r for r in self.analysis_results if not r['lending_recommendations']['loan_approval']]
-        if not approved_customers:
-            st.warning("No customers approved for loans. Review approval criteria or customer targeting.")
-        if rejected_customers:
-            common_reasons = []
-            for r in rejected_customers:
-                if r['credit_score'] < 700:
-                    common_reasons.append("Low credit score")
-                if r['risk_assessment']['risk_level'] in ['High', 'Very High']:
-                    common_reasons.append("High risk level")
-            if common_reasons:
-                st.info(f"Common rejection reasons: {', '.join(set(common_reasons))}")
+        # st.markdown("---")
+        # st.subheader("Insights & Suggestions")
+        # approved_customers = [r for r in self.analysis_results if r['lending_recommendations']['loan_approval']]
+        # rejected_customers = [r for r in self.analysis_results if not r['lending_recommendations']['loan_approval']]
+        # if not approved_customers:
+        #     st.warning("No customers approved for loans. Review approval criteria or customer targeting.")
+        # if rejected_customers:
+        #     common_reasons = []
+        #     for r in rejected_customers:
+        #         if r['credit_score'] < 700:
+        #             common_reasons.append("Low credit score")
+        #         if r['risk_assessment']['risk_level'] in ['High', 'Very High']:
+        #             common_reasons.append("High risk level")
+        #     if common_reasons:
+        #         st.info(f"Common rejection reasons: {', '.join(set(common_reasons))}")
     
     def display_individual_customer_analysis(self):
         """Display detailed analysis for individual customers"""
@@ -538,18 +726,28 @@ class FinancialDashboard:
         The model considers income, expenses, savings, debt, credit history, and rule-based scores (credit score, risk score, financial health score). 
         Use this as a data-driven second opinion alongside rule-based recommendations.
         """)
-        customer_options = [f"{r['customer_name']} ({r['customer_id']})" for r in self.analysis_results]
+        # Check if the first analysis result has the minimum required keys for auto-generated or real profiles
+        min_required_keys = [
+            'monthly_income', 'monthly_expenses', 'savings_balance',
+            'investment_balance', 'total_debt', 'payment_history_score',
+            'credit_utilization_ratio', 'credit_age_months'
+        ]
+        first_result = self.analysis_results[0]
+        if not all(key in first_result for key in min_required_keys):
+            st.info("Loan approval prediction is only available for customer-level or auto-generated profiles. Please upload a customer data CSV file or a bank statement.")
+            return
+        # For auto-generated profiles, fill in missing advanced fields with defaults
+        customer_options = [f"Customer {i+1}" for i in range(len(self.analysis_results))]
         selected_customer = st.selectbox("Select Customer for ML Prediction", customer_options)
         if selected_customer:
-            customer_id = selected_customer.split("(")[-1].split(")")[0]
-            customer_result = next(r for r in self.analysis_results if r['customer_id'] == customer_id)
-            
-            # Combine key metrics with rule-based scores for ML prediction
-            ml_input = customer_result['key_metrics'].copy()
-            ml_input['credit_score'] = customer_result['credit_score']
-            ml_input['risk_score'] = customer_result['risk_assessment']['risk_score']
-            ml_input['financial_health_score'] = customer_result['financial_health']['financial_health_score']
-            
+            idx = int(selected_customer.split(" ")[-1]) - 1
+            customer_result = self.analysis_results[idx]
+            # Prepare input for ML model
+            ml_input = customer_result.copy()
+            # Add dummy advanced fields if missing
+            ml_input.setdefault('credit_score', 700)
+            ml_input.setdefault('risk_score', 2.0)
+            ml_input.setdefault('financial_health_score', 3.0)
             ml_pred, ml_prob = self.predict_loan_approval_ml(ml_input)
             st.subheader("ML Model Prediction Result")
             if ml_pred is not None:
@@ -670,6 +868,7 @@ class FinancialDashboard:
                 tmp.write(uploaded_file.read())
                 tmp_path = tmp.name
             customer = parser.parse(tmp_path)
+            self.ml_df = customer  # Store the DataFrame for use in all analysis functions
             return [customer]
         except Exception as e:
             st.error(f"Error parsing bank statement: {str(e)}")
@@ -678,6 +877,7 @@ class FinancialDashboard:
     def predict_loan_approval_ml(self, customer):
         if self.ml_model is None:
             return None, None
+        # Use the correct customer-level features for the loan approval model
         feature_cols = [
             'monthly_income', 'monthly_expenses', 'savings_balance', 'investment_balance',
             'total_debt', 'payment_history_score', 'credit_utilization_ratio', 'credit_age_months',
@@ -692,6 +892,207 @@ class FinancialDashboard:
         else:
             prob = proba[1]
         return pred, prob
+
+# --- Add this helper function to aggregate transaction data and build customer profile ---
+def build_customer_profile_from_transactions(df):
+    import numpy as np
+    from datetime import datetime
+    # Aggregate sums
+    monthly_income = df.loc[df['Predicted_Label'] == 'Income', 'Amount'].sum()
+    monthly_expenses = df.loc[df['Predicted_Label'] == 'Expense', 'Amount'].sum()
+    savings_balance = df.loc[df['Predicted_Label'] == 'Savings', 'Amount'].sum()
+    # Estimate credit_age_months from earliest transaction
+    if 'Date' in df.columns:
+        try:
+            # Try to parse dates
+            dates = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+            min_date = dates.min()
+            max_date = dates.max()
+            if pd.notnull(min_date) and pd.notnull(max_date):
+                credit_age_months = max(1, (max_date.year - min_date.year) * 12 + (max_date.month - min_date.month))
+            else:
+                credit_age_months = 24  # fallback default
+        except Exception:
+            credit_age_months = 24
+    else:
+        credit_age_months = 24
+    # Build profile dict with sensible defaults for other fields
+    customer_profile = {
+        'monthly_income': monthly_income,
+        'monthly_expenses': monthly_expenses,
+        'savings_balance': savings_balance,
+        'investment_balance': 0,
+        'total_debt': 0,
+        'payment_history_score': 1.0,
+        'credit_utilization_ratio': 0.3,
+        'credit_age_months': credit_age_months,
+    }
+    return customer_profile
+
+def rule_based_ai_analysis(customer_data):
+    """
+    Rule-based AI analysis that provides intelligent insights
+    """
+    income = customer_data.get('income', 0)
+    expenses = customer_data.get('expenses', 0)
+    savings = customer_data.get('savings', 0)
+    transactions = customer_data.get('transactions', 0)
+    
+    analysis = []
+    
+    # Risk Assessment
+    risk_score = 0
+    risk_factors = []
+    
+    if income > 0:
+        expense_ratio = expenses / income
+        savings_ratio = savings / income
+        
+        if expense_ratio > 0.9:
+            risk_score += 30
+            risk_factors.append("Critical: Expenses exceed 90% of income")
+        elif expense_ratio > 0.8:
+            risk_score += 20
+            risk_factors.append("High: Expenses exceed 80% of income")
+        elif expense_ratio > 0.7:
+            risk_score += 10
+            risk_factors.append("Moderate: Expenses exceed 70% of income")
+        
+        if savings_ratio < 0.05:
+            risk_score += 25
+            risk_factors.append("Critical: Savings below 5% of income")
+        elif savings_ratio < 0.1:
+            risk_score += 15
+            risk_factors.append("High: Savings below 10% of income")
+        elif savings_ratio < 0.2:
+            risk_score += 5
+            risk_factors.append("Moderate: Savings below 20% of income")
+    
+    # Income Stability Analysis
+    if income > 50000:
+        if savings < 0.15 * income:
+            analysis.append("🔍 **Income Analysis**: High income but low savings - potential lifestyle inflation")
+        else:
+            analysis.append("✅ **Income Analysis**: Strong income with good savings discipline")
+    elif income > 25000:
+        analysis.append("📊 **Income Analysis**: Moderate income level - focus on expense optimization")
+    else:
+        analysis.append("⚠️ **Income Analysis**: Lower income - prioritize essential expenses")
+    
+    # Savings Behavior Analysis
+    if savings > 0.3 * income:
+        analysis.append("🏆 **Savings Excellence**: Outstanding savings rate - eligible for premium products")
+    elif savings > 0.2 * income:
+        analysis.append("✅ **Good Savings**: Above-average savings - consider investment products")
+    elif savings > 0.1 * income:
+        analysis.append("📈 **Moderate Savings**: Adequate savings - room for improvement")
+    else:
+        analysis.append("⚠️ **Low Savings**: Below recommended savings rate - financial education needed")
+    
+    # Product Recommendations
+    recommendations = []
+    if income > 40000 and expenses/income < 0.7:
+        recommendations.append("💳 **Credit Card**: Eligible for premium credit cards")
+    if savings > 0.2 * income:
+        recommendations.append("🏦 **Fixed Deposits**: High savings - suggest FD products")
+    if income > 30000 and savings < 0.15 * income:
+        recommendations.append("📱 **Recurring Deposits**: Help build savings discipline")
+    if income > 50000:
+        recommendations.append("🏠 **Home Loan**: High income - pre-approved home loan eligible")
+    if savings > 0.25 * income:
+        recommendations.append("📊 **Investment Products**: Suggest SIP, mutual funds")
+    
+    # Risk Level Classification
+    if risk_score >= 40:
+        risk_level = "🔴 HIGH RISK"
+    elif risk_score >= 20:
+        risk_level = "🟡 MEDIUM RISK"
+    else:
+        risk_level = "🟢 LOW RISK"
+    
+    return {
+        "risk_level": risk_level,
+        "risk_score": risk_score,
+        "risk_factors": risk_factors,
+        "analysis": analysis,
+        "recommendations": recommendations,
+        "customer_profile": f"Income: ₹{income:,.2f}, Expenses: ₹{expenses:,.2f}, Savings: ₹{savings:,.2f}, Transactions: {transactions}"
+    }
+
+def ai_opportunity_risk_analyzer(df):
+    st.header('🤖 AI Opportunity & Risk Analyzer')
+    if df is None or df.empty:
+        st.info('No customer data loaded. Please upload a statement or CSV.')
+        return
+    
+    # Compute key metrics
+    income = df[df['Predicted_Label'] == 'INCOME']['Amount'].sum()
+    expenses = df[df['Predicted_Label'] == 'EXPENSE']['Amount'].sum()
+    savings = df[df['Predicted_Label'] == 'SAVINGS']['Amount'].sum()
+    n_txns = len(df)
+    
+    # Rule-based AI Analysis
+    customer_data = {
+        'income': income,
+        'expenses': expenses,
+        'savings': savings,
+        'transactions': n_txns
+    }
+    
+    ai_result = rule_based_ai_analysis(customer_data)
+    
+    # Display AI Analysis
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🎯 Risk Assessment")
+        st.markdown(f"**Risk Level: {ai_result['risk_level']}**")
+        st.markdown(f"**Risk Score: {ai_result['risk_score']}/100**")
+        
+        if ai_result['risk_factors']:
+            st.write("**Risk Factors:**")
+            for factor in ai_result['risk_factors']:
+                st.write(f"• {factor}")
+    
+    with col2:
+        st.subheader("📊 Customer Profile")
+        st.write(ai_result['customer_profile'])
+        if income > 0:
+            st.write(f"Expense Ratio: {expenses/income:.1%}")
+            st.write(f"Savings Ratio: {savings/income:.1%}")
+    
+    st.markdown("---")
+    
+    # Detailed Analysis
+    st.subheader("🧠 AI Analysis")
+    for analysis in ai_result['analysis']:
+        st.markdown(analysis)
+    
+    # Product Recommendations
+    st.subheader("💡 Product Recommendations")
+    if ai_result['recommendations']:
+        for rec in ai_result['recommendations']:
+            st.markdown(rec)
+    else:
+        st.write("No specific product recommendations at this time.")
+    
+    # Action Items
+    st.subheader("🎯 Action Items")
+    if ai_result['risk_score'] > 30:
+        st.warning("**Immediate Actions Required:**")
+        st.write("• Schedule financial counseling session")
+        st.write("• Review expense patterns")
+        st.write("• Set up automatic savings")
+    elif ai_result['risk_score'] > 15:
+        st.info("**Recommended Actions:**")
+        st.write("• Monitor spending habits")
+        st.write("• Increase savings rate")
+        st.write("• Consider budget planning tools")
+    else:
+        st.success("**Maintenance Actions:**")
+        st.write("• Continue current financial discipline")
+        st.write("• Explore investment opportunities")
+        st.write("• Consider premium banking services")
 
 def main():
     st.set_page_config(
@@ -708,12 +1109,48 @@ def main():
     
     dashboard = FinancialDashboard()
     
+    # Load enhanced model for transaction classification
+    try:
+        enhanced_model = joblib.load('transaction_classifier_enhanced.pkl')
+        enhanced_vectorizer = joblib.load('transaction_vectorizer_enhanced.pkl')
+        print("✅ Loaded enhanced model")
+        use_enhanced_model = True
+    except Exception as e:
+        print(f"⚠️ Could not load enhanced model: {e}")
+        # Fallback to BERT model
+        bert_embedder = joblib.load('bert_embedder.pkl')
+        bert_clf = joblib.load('bert_classifier.pkl')
+        use_enhanced_model = False
+    
+    # Define savings detection function inline
+    def detect_savings_keywords(description):
+        """Strong rule-based savings detection"""
+        if not description:
+            return False
+        
+        desc_upper = description.upper()
+        
+        # Highly specific savings keywords with word boundaries
+        savings_patterns = [
+            r'\bFD\b', r'\bFIXED DEPOSIT\b', r'\bSIP\b', r'\bMUTUAL FUND\b',
+            r'\bPPF\b', r'\bNPS\b', r'\bRD\b', r'\bRECURRING DEPOSIT\b',
+            r'\bLIC\b', r'\bPREMIUM\b', r'\bINVESTMENT\b', r'\bMATURITY\b',
+            r'\bCLOSURE\b', r'\bTRANSFER TO.*DEPOSIT\b', r'\bAUTO SWEEP\b',
+            r'\bSWEEP.*FD\b', r'\bGOAL.*SAVINGS\b', r'\bEDUCATION FUND\b',
+            r'\bCHILD PLAN\b', r'\bRETIREMENT\b', r'\bPENSION\b'
+        ]
+        
+        for pattern in savings_patterns:
+            if re.search(pattern, desc_upper):
+                return True
+        return False
+    
     # Sidebar for file upload
     st.sidebar.header("📁 Data Input")
     
     upload_option = st.sidebar.radio(
         "Choose data source:",
-        ["Upload CSV File", "Upload Bank Statement", "Use Sample Data"]
+        ["Upload CSV File", "Upload Bank Statement", "Use Sample Data", "Use Cleaned Transactions CSV"]
     )
     
     customers = None
@@ -724,78 +1161,348 @@ def main():
             help="CSV should contain: customer_id, customer_name, monthly_income, monthly_expenses, savings_balance, investment_balance, total_debt, payment_history_score, credit_utilization_ratio, credit_age_months"
         )
         if uploaded_file is not None:
-            customers = dashboard.load_csv_data(uploaded_file)
-            if customers:
-                st.sidebar.success(f"✅ Loaded {len(customers)} customers")
-                dashboard.analyze_customers(customers)
+            df = pd.read_csv(uploaded_file)
+            df.columns = [c.strip() for c in df.columns]
+            if 'Type' in df.columns:
+                df['Type'] = df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+            df['Description'] = df['Description'].astype(str)
+            df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+            required_cols = ['Amount', 'Type', 'Description']
+            df = df.dropna(subset=required_cols)
+            # Add Merchant_Category
+            df['Merchant_Category'] = df['Description'].apply(extract_merchant_category)
+            
+            # Use enhanced model if available, otherwise fallback to BERT
+            if use_enhanced_model:
+                # Prepare text features for enhanced model
+                df['text_features'] = df['Description'].fillna('') + ' ' + df['Type'].fillna('')
+                X_vec = enhanced_vectorizer.transform(df['text_features'])
+                model_labels = enhanced_model.predict(X_vec)
+                print('Enhanced model predictions (before rules):', pd.Series(model_labels).value_counts())
+                
+                # Apply enhanced classification with savings detector
+                final_labels = []
+                label_sources = []
+                for i, row in df.iterrows():
+                    description = str(row.get('Description', ''))
+                    transaction_type = str(row.get('Type', '')).upper()
+                    ml_pred = model_labels[i]
+                    
+                    # 1. Check for savings using rule-based detector
+                    if detect_savings_keywords(description):
+                        final_labels.append('Savings')
+                        label_sources.append('Rule-Savings-Detector')
+                    # 2. Apply type-based overrides
+                    elif transaction_type == 'CREDIT':
+                        if ml_pred == 'EXPENSE':
+                            final_labels.append('Income')
+                            label_sources.append('Rule-Income-Override')
+                        else:
+                            final_labels.append(ml_pred)
+                            label_sources.append('Enhanced-Model')
+                    elif transaction_type == 'DEBIT':
+                        if ml_pred == 'INCOME':
+                            final_labels.append('Expense')
+                            label_sources.append('Rule-Expense-Override')
+                        else:
+                            final_labels.append(ml_pred)
+                            label_sources.append('Enhanced-Model')
+                    else:
+                        final_labels.append(ml_pred)
+                        label_sources.append('Enhanced-Model')
+                
+                df['Predicted_Label'] = final_labels
+                df['Label_Source'] = label_sources
             else:
-                st.sidebar.error("❌ Failed to load CSV data")
-                return
+                # Fallback to BERT model
+                combined_text = (df['Type'].astype(str).str.upper().str.strip() + ': ' + df['Description'].astype(str).str.strip() + ' | ' + df['Merchant_Category'].astype(str).str.strip()).tolist()
+                X = bert_embedder.encode(combined_text, show_progress_bar=False)
+                model_labels = bert_clf.predict(X)
+                print('BERT model predictions (before rules):', pd.Series(model_labels).value_counts())
+                label_and_source = [hybrid_label_rule(row, model_labels[i]) for i, row in df.iterrows()]
+                df['Predicted_Label'] = [ls[0] for ls in label_and_source]
+                df['Label_Source'] = [ls[1] for ls in label_and_source]
+            # --- FORCE TYPE-CONSISTENT OVERRIDE ---
+            credit_mask = df['Type'].str.upper() == 'CREDIT'
+            debit_mask = df['Type'].str.upper() == 'DEBIT'
+            mask_credit_override = credit_mask & ~df['Predicted_Label'].isin(['Savings', 'Income'])
+            df.loc[mask_credit_override, 'Predicted_Label'] = 'Income'
+            df.loc[mask_credit_override, 'Label_Source'] = 'Rule-Income-Force'
+            mask_debit_override = debit_mask & ~df['Predicted_Label'].isin(['Savings', 'Expense'])
+            df.loc[mask_debit_override, 'Predicted_Label'] = 'Expense'
+            df.loc[mask_debit_override, 'Label_Source'] = 'Rule-Expense-Force'
+            print('Predicted_Label value counts:', df['Predicted_Label'].value_counts())
+            print('Sample CREDIT rows after override:')
+            print(df[df['Type'].str.upper() == 'CREDIT'][['Type', 'Description', 'Predicted_Label', 'Label_Source']].head(10))
+            customers = df.to_dict('records')
+            st.sidebar.success(f"✅ Loaded {len(customers)} transactions")
+            dashboard.analyze_customers(customers)
     elif upload_option == "Upload Bank Statement":
-        uploaded_file = st.sidebar.file_uploader(
-            "Upload raw bank statement CSV file",
+        uploaded_files = st.sidebar.file_uploader(
+            "Upload raw bank statement CSV file(s)",
             type=['csv'],
-            help="Supported: PNB, SBI, ICICI, APGB statement CSVs"
+            accept_multiple_files=True,
+            help="Supported: PNB, SBI, ICICI, APGB statement CSVs. You can upload multiple files at once."
         )
         customer_id = st.sidebar.text_input("Customer ID (optional)", value="AUTO")
         customer_name = st.sidebar.text_input("Customer Name (optional)", value="Unknown")
-        if uploaded_file is not None:
-            customers = dashboard.load_bank_statement(uploaded_file, customer_id, customer_name)
+        customers = []
+        failed_files = []
+        parser = UniversalBankStatementParser()
+        if uploaded_files:
+            for uploaded_file in uploaded_files:
+                try:
+                    df = pd.read_csv(uploaded_file)
+                    df.columns = [c.strip() for c in df.columns]
+                    df.columns = [c.strip().lower() for c in df.columns]
+                    # Always rename to expected Title Case
+                    rename_map = {
+                        'date': 'Date',
+                        'description': 'Description',
+                        'amount': 'Amount',
+                        'type': 'Type'
+                    }
+                    df = df.rename(columns=rename_map)
+                    print('Columns after renaming:', df.columns)
+                    if 'Type' in df.columns:
+                        df['Type'] = df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+                        print('Type values after DR/CR conversion:', df['Type'].unique())
+                        print(df[['Type', 'Description' if 'Description' in df.columns else 'remarks', 'Amount']].head(20))
+                    required_cols = ['Date', 'Description', 'Amount', 'Type']
+                    missing = [col for col in required_cols if col not in df.columns]
+                    if not missing:
+                        df = df.rename(columns={
+                            'date': 'Date',
+                            'description': 'Description',
+                            'amount': 'Amount',
+                            'type': 'Type'
+                        })
+                        std_df = df
+                    else:
+                        # --- Universal bank statement parser ---
+                        cols = [c.strip().lower() for c in df.columns]
+                        std_df = None
+                        # ICICI/PNB style
+                        if 'date' in cols and 'amount' in cols and ('remarks' in cols or 'description' in cols) and 'type' in cols:
+                            desc_col = 'description' if 'description' in cols else 'remarks'
+                            std_df = df.rename(columns={desc_col: 'Description', 'date': 'Date', 'amount': 'Amount', 'type': 'Type'})
+                            std_df = std_df[['Date', 'Description', 'Amount', 'Type']]
+                        # SBI style (all lowercase)
+                        elif 'txn date' in cols and 'debit' in cols and 'credit' in cols and 'description' in cols:
+                            # Melt Debit/Credit into Amount/Type
+                            df['Type'] = df.apply(lambda row: 'DEBIT' if pd.notnull(row['debit']) and str(row['debit']).strip() != '' else ('CREDIT' if pd.notnull(row['credit']) and str(row['credit']).strip() != '' else ''), axis=1)
+                            df['Amount'] = df.apply(lambda row: row['debit'] if row['Type'] == 'DEBIT' else row['credit'], axis=1)
+                            std_df = df.rename(columns={'txn date': 'Date', 'description': 'Description'})
+                            std_df = std_df[['Date', 'Description', 'Amount', 'Type']]
+                        # APGB style (all lowercase)
+                        elif 'post date' in cols and 'debit' in cols and 'credit' in cols and 'narration' in cols:
+                            df['Type'] = df.apply(lambda row: 'DEBIT' if pd.notnull(row['debit']) and str(row['debit']).strip() != '' else ('CREDIT' if pd.notnull(row['credit']) and str(row['credit']).strip() != '' else ''), axis=1)
+                            df['Amount'] = df.apply(lambda row: row['debit'] if row['Type'] == 'DEBIT' else row['credit'], axis=1)
+                            std_df = df.rename(columns={'post date': 'Date', 'narration': 'Description'})
+                            std_df = std_df[['Date', 'Description', 'Amount', 'Type']]
+                        # Fallback: try to use any available date, amount, type, description columns
+                        elif set(['date', 'description', 'amount', 'type']).issubset(set(cols)):
+                            std_df = df.rename(columns={'date': 'Date', 'description': 'Description', 'amount': 'Amount', 'type': 'Type'})
+                            std_df = std_df[['Date', 'Description', 'Amount', 'Type']]
+                        else:
+                            st.sidebar.error(f"❌ Could not auto-detect format for file: {uploaded_file.name}. Columns found: {df.columns.tolist()}")
+                            continue
+                        # Standardize types
+                        std_df['Description'] = std_df['Description'].astype(str)
+                        std_df['Amount'] = pd.to_numeric(std_df['Amount'], errors='coerce')
+                        std_df['Type'] = std_df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+                        print('Unique values in Type column after cleaning:', std_df['Type'].unique())
+                        print(std_df[['Type', 'Description', 'Amount']].head(20))
+                        print('Rows before dropna:', len(std_df))
+                        std_df = std_df.dropna(subset=['Description', 'Amount', 'Type'])
+                        print('Rows after dropna:', len(std_df))
+                    # Append to customers if valid
+                    if std_df is not None and not std_df.empty:
+                        # --- Robust cleaning for Amount column ---
+                        if 'Amount' in std_df.columns:
+                            # Remove rows where Amount is missing or blank
+                            std_df = std_df[std_df['Amount'].notnull()]
+                            std_df = std_df[std_df['Amount'].astype(str).str.strip() != '']
+                            # Convert to float, coerce errors to NaN
+                            std_df['Amount'] = pd.to_numeric(std_df['Amount'], errors='coerce')
+                            # Drop rows where conversion failed (Amount is NaN)
+                            std_df = std_df[std_df['Amount'].notnull()]
+                            # Show error if all rows dropped
+                            if std_df.empty:
+                                st.sidebar.error(f"❌ All rows in {uploaded_file.name} had invalid or missing Amount values. Please check your file.")
+                                continue
+                        # --- Check for required columns before ML prediction ---
+                        required_cols = ['Date', 'Description', 'Amount', 'Type']
+                        missing_cols = [col for col in required_cols if col not in std_df.columns]
+                        if std_df.empty or missing_cols:
+                            st.sidebar.error(f"❌ {uploaded_file.name} is missing required columns: {missing_cols} or is empty. Skipping ML prediction.")
+                            std_df['Predicted_Label'] = 'Unknown'
+                            customers.append(std_df)
+                            continue
+                        # Add Merchant_Category
+                        std_df['Merchant_Category'] = std_df['Description'].apply(extract_merchant_category)
+                        
+                        # Use enhanced model if available, otherwise fallback to BERT
+                        if use_enhanced_model:
+                            # Prepare text features for enhanced model
+                            std_df['text_features'] = std_df['Description'].fillna('') + ' ' + std_df['Type'].fillna('')
+                            X_vec = enhanced_vectorizer.transform(std_df['text_features'])
+                            model_labels = enhanced_model.predict(X_vec)
+                            print('Enhanced model predictions (before rules):', pd.Series(model_labels).value_counts())
+                            
+                            # Apply enhanced classification with savings detector
+                            final_labels = []
+                            label_sources = []
+                            for i, row in std_df.iterrows():
+                                description = str(row.get('Description', ''))
+                                transaction_type = str(row.get('Type', '')).upper()
+                                ml_pred = model_labels[i]
+                                
+                                # 1. Check for savings using rule-based detector
+                                if detect_savings_keywords(description):
+                                    final_labels.append('Savings')
+                                    label_sources.append('Rule-Savings-Detector')
+                                # 2. Apply type-based overrides
+                                elif transaction_type == 'CREDIT':
+                                    if ml_pred == 'EXPENSE':
+                                        final_labels.append('Income')
+                                        label_sources.append('Rule-Income-Override')
+                                    else:
+                                        final_labels.append(ml_pred)
+                                        label_sources.append('Enhanced-Model')
+                                elif transaction_type == 'DEBIT':
+                                    if ml_pred == 'INCOME':
+                                        final_labels.append('Expense')
+                                        label_sources.append('Rule-Expense-Override')
+                                    else:
+                                        final_labels.append(ml_pred)
+                                        label_sources.append('Enhanced-Model')
+                                else:
+                                    final_labels.append(ml_pred)
+                                    label_sources.append('Enhanced-Model')
+                            
+                            std_df['Predicted_Label'] = final_labels
+                            std_df['Label_Source'] = label_sources
+                        else:
+                            # Fallback to BERT model
+                            combined_text = (std_df['Type'].astype(str).str.upper().str.strip() + ': ' + std_df['Description'].astype(str).str.strip() + ' | ' + std_df['Merchant_Category'].astype(str).str.strip()).tolist()
+                            X = bert_embedder.encode(combined_text, show_progress_bar=False)
+                            model_labels = bert_clf.predict(X)
+                            print('BERT model predictions (before rules):', pd.Series(model_labels).value_counts())
+                            label_and_source = [hybrid_label_rule(row, model_labels[i]) for i, row in std_df.iterrows()]
+                            std_df['Predicted_Label'] = [ls[0] for ls in label_and_source]
+                            std_df['Label_Source'] = [ls[1] for ls in label_and_source]
+                        # --- FORCE TYPE-CONSISTENT OVERRIDE ---
+                        credit_mask = std_df['Type'].str.upper() == 'CREDIT'
+                        debit_mask = std_df['Type'].str.upper() == 'DEBIT'
+                        mask_credit_override = credit_mask & ~std_df['Predicted_Label'].isin(['Savings', 'Income'])
+                        std_df.loc[mask_credit_override, 'Predicted_Label'] = 'Income'
+                        std_df.loc[mask_credit_override, 'Label_Source'] = 'Rule-Income-Force'
+                        mask_debit_override = debit_mask & ~std_df['Predicted_Label'].isin(['Savings', 'Expense'])
+                        std_df.loc[mask_debit_override, 'Predicted_Label'] = 'Expense'
+                        std_df.loc[mask_debit_override, 'Label_Source'] = 'Rule-Expense-Force'
+                        print('Predicted_Label value counts:', std_df['Predicted_Label'].value_counts())
+                        print('Sample CREDIT rows after override:')
+                        print(std_df[std_df['Type'].str.upper() == 'CREDIT'][['Type', 'Description', 'Predicted_Label', 'Label_Source']].head(10))
+                        customers.append(std_df)
+                    else:
+                        st.sidebar.error(f"❌ Parsed DataFrame is empty for file: {uploaded_file.name}")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Could not read file: {uploaded_file.name}. Error: {e}")
+                    failed_files.append(uploaded_file.name)
+                    continue
+            # After processing all files, analyze if any customers loaded
             if customers:
-                st.sidebar.success(f"✅ Parsed bank statement for {customers[0]['customer_name']}")
-                dashboard.analyze_customers(customers)
+                st.sidebar.success(f"✅ Loaded {len(customers)} bank statements")
+                # Concatenate all uploaded DataFrames
+                all_df = pd.concat(customers, ignore_index=True)
+                dashboard.ml_df = all_df  # So display_customer_overview can use Predicted_Label
+
+                # Create a summary customer dict for analysis
+                customer_dict = build_customer_profile_from_transactions(all_df)
+                dashboard.analyze_customers([customer_dict])
             else:
-                st.sidebar.error("❌ Failed to parse bank statement")
-                return
+                st.sidebar.error("❌ No valid bank statements loaded")
+    elif upload_option == "Use Cleaned Transactions CSV":
+        cleaned_csv_path = "transactions_for_labeling_cleaned.csv"
+        if os.path.exists(cleaned_csv_path):
+            df = pd.read_csv(cleaned_csv_path)
+            df.columns = [c.strip() for c in df.columns]
+            if 'Type' in df.columns:
+                df['Type'] = df['Type'].astype(str).str.strip().str.upper().replace({'DR': 'DEBIT', 'CR': 'CREDIT'})
+            df['Description'] = df['Description'].astype(str)
+            df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
+            required_cols = ['Amount', 'Type', 'Description']
+            df = df.dropna(subset=required_cols)
+            # Add Merchant_Category
+            df['Merchant_Category'] = df['Description'].apply(extract_merchant_category)
+            # Use BERT embedder with Type+Description|Merchant_Category
+            combined_text = (df['Type'].astype(str).str.upper().str.strip() + ': ' + df['Description'].astype(str).str.strip() + ' | ' + df['Merchant_Category'].astype(str).str.strip()).tolist()
+            X = bert_embedder.encode(combined_text, show_progress_bar=False)
+            model_labels = bert_clf.predict(X)
+            print('Raw model predictions (before rules):', pd.Series(model_labels).value_counts())
+            label_and_source = [hybrid_label_rule(row, model_labels[i]) for i, row in df.iterrows()]
+            df['Predicted_Label'] = [ls[0] for ls in label_and_source]
+            df['Label_Source'] = [ls[1] for ls in label_and_source]
+            # --- FORCE TYPE-CONSISTENT OVERRIDE ---
+            credit_mask = df['Type'].str.upper() == 'CREDIT'
+            debit_mask = df['Type'].str.upper() == 'DEBIT'
+            mask_credit_override = credit_mask & ~df['Predicted_Label'].isin(['Savings', 'Income'])
+            df.loc[mask_credit_override, 'Predicted_Label'] = 'Income'
+            df.loc[mask_credit_override, 'Label_Source'] = 'Rule-Income-Force'
+            mask_debit_override = debit_mask & ~df['Predicted_Label'].isin(['Savings', 'Expense'])
+            df.loc[mask_debit_override, 'Predicted_Label'] = 'Expense'
+            df.loc[mask_debit_override, 'Label_Source'] = 'Rule-Expense-Force'
+            print('Predicted_Label value counts:', df['Predicted_Label'].value_counts())
+            print('Sample CREDIT rows after override:')
+            print(df[df['Type'].str.upper() == 'CREDIT'][['Type', 'Description', 'Predicted_Label', 'Label_Source']].head(10))
+            customers = df.to_dict('records')
+            st.sidebar.success(f"✅ Loaded {len(customers)} transactions from cleaned CSV")
+            dashboard.analyze_customers(customers)
+        else:
+            st.sidebar.error(f"❌ {cleaned_csv_path} not found. Please generate it first.")
     else:
         customers = get_all_sample_customers()
-        st.sidebar.success(f"✅ Loaded {len(customers)} sample customers")
+        st.sidebar.success(f"✅ Loaded {len(customers)} sample transactions")
         dashboard.analyze_customers(customers)
     
     if dashboard.analysis_results:
         # Create tabs for different analysis views
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-            "📊 Overview", 
-            "💳 Credit Analysis", 
-            "🏥 Financial Health", 
-            "💰 Lending Decisions",
-            "👤 Individual Analysis",
-            "🔍 Insights & Segmentation",
-            "🤖 ML Prediction"
-        ])
+        tab_names = [
+            'Customer Overview',
+            'Credit Score Analysis',
+            'Financial Health',
+            'Lending Recommendations',
+            'Insights & Segmentation',
+            'ML Prediction',
+            'AI Opportunity & Risk Analyzer'  # Removed 'Export' tab
+        ]
+        tabs = st.tabs(tab_names)
         
-        with tab1:
+        with tabs[0]:
             dashboard.display_customer_overview()
         
-        with tab2:
+        with tabs[1]:
             dashboard.display_credit_score_analysis()
         
-        with tab3:
+        with tabs[2]:
             dashboard.display_financial_health_analysis()
         
-        with tab4:
+        with tabs[3]:
             dashboard.display_lending_recommendations()
         
-        with tab5:
-            dashboard.display_individual_customer_analysis()
-        
-        with tab6:
+        with tabs[4]:
             dashboard.display_insights_and_segmentation()
         
-        with tab7:
+        with tabs[5]:
             dashboard.display_ml_prediction_tab()
         
-        # Export functionality
-        st.sidebar.header("📤 Export Results")
-        if st.sidebar.button("Export to Excel"):
-            filename = dashboard.export_results()
-            with open(filename, 'rb') as f:
-                st.sidebar.download_button(
-                    label="Download Excel Report",
-                    data=f.read(),
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        with tabs[6]:
+            # Use the most recently loaded/processed DataFrame
+            if hasattr(dashboard, 'ml_df') and dashboard.ml_df is not None:
+                ai_opportunity_risk_analyzer(dashboard.ml_df)
+            else:
+                st.info('No transaction data available for AI analysis.')
 
 if __name__ == "__main__":
     main() 

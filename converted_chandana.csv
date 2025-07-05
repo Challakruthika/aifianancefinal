@@ -1,0 +1,2 @@
+customer_id,customer_name,monthly_income,monthly_expenses,savings_balance,investment_balance,total_debt,payment_history_score,credit_utilization_ratio,credit_age_months
+AUTO001,Chandana,0.0,0.0,0.0,0.0,0.0,1.0,0.0,0

@@ -1,0 +1,101 @@
+Date,Description,Amount,Type,Predicted_Label
+2024-03-29,SIP installment,16215.73,DR,Expense
+2024-01-20,EMI payment,37850.87,DR,Expense
+2024-05-26,Uber Ride,14196.26,CR,Income
+2024-02-15,NPS Contribution,14897.09,CR,Income
+2024-03-24,FD created,6325.66,DR,Expense
+2024-03-11,Amount moved to Savings Account,16907.26,CR,Income
+2024-03-18,PhonePe Payment,32398.95,DR,Expense
+2024-02-28,Amazon Purchase,18222.17,CR,Income
+2024-06-06,Interest received on Fixed Deposit,13214.73,CR,Income
+2024-01-04,Refund from Amazon,37014.87,DR,Expense
+2024-06-01,Zomato Order,16570.9,DR,Expense
+2024-06-14,Cashback from Credit Card,21756.86,CR,Income
+2024-01-03,PhonePe Payment,46463.65,CR,Income
+2024-03-09,Deposited in PPF,12224.83,DR,Expense
+2024-01-04,Transferred to RD Account,44827.62,CR,Income
+2024-06-18,Interest received on Fixed Deposit,41094.97,DR,Expense
+2024-02-21,Electricity Bill Payment,26905.57,DR,Expense
+2024-04-09,NPS Contribution,47360.26,DR,Expense
+2024-03-29,Transferred to RD Account,3320.96,CR,Income
+2024-03-09,Gold Investment,39543.24,CR,Income
+2024-06-12,Movie Ticket BookMyShow,16037.97,DR,Expense
+2024-01-12,Refund from Amazon,1034.26,CR,Expense
+2024-04-06,Mobile Recharge Jio,42519.04,CR,Income
+2024-06-04,SIP installment,36878.95,CR,Income
+2024-03-26,Credit Card Payment,3417.16,DR,Expense
+2024-06-23,Amount moved to Savings Account,46859.4,DR,Expense
+2024-06-12,Deposited in PPF,14103.0,DR,Expense
+2024-05-03,Fuel at HP Petrol Bunk,2344.18,CR,Income
+2024-06-23,Deposited in PPF,8881.98,DR,Expense
+2024-03-07,NPS Contribution,31275.84,DR,Expense
+2024-04-06,Uber Ride,18377.22,CR,Income
+2024-06-09,Mobile Recharge Jio,48467.62,DR,Expense
+2024-03-12,PhonePe Payment,1397.37,DR,Expense
+2024-05-02,Swiggy Order,2684.41,CR,Income
+2024-03-09,Zomato Order,21677.06,DR,Expense
+2024-02-02,Deposited in PPF,46882.32,DR,Expense
+2024-03-06,Salary credited from Infosys,28196.34,DR,Expense
+2024-03-07,SIP installment,37742.08,CR,Income
+2024-02-06,SIP installment,39542.19,DR,Expense
+2024-01-28,Invested in Mutual Funds,44296.35,CR,Income
+2024-03-23,Cashback from Credit Card,48715.41,DR,Expense
+2024-02-25,SIP installment,8899.56,CR,Income
+2024-03-02,Electricity Bill Payment,15896.65,DR,Expense
+2024-04-15,Amazon Purchase,15338.95,CR,Income
+2024-06-23,Rent paid to landlord,34308.21,CR,Income
+2024-04-23,Salary credited from Infosys,20479.43,DR,Expense
+2024-04-01,Freelance payment from Upwork,35080.37,DR,Expense
+2024-02-16,FD created,47851.46,DR,Expense
+2024-06-11,EMI payment,41212.33,DR,Expense
+2024-01-25,Gold Investment,17045.61,DR,Expense
+2024-02-23,Credit Card Payment,30452.63,CR,Income
+2024-04-22,NPS Contribution,15735.68,DR,Expense
+2024-05-25,Gold Investment,40382.56,CR,Income
+2024-03-09,Interest received on Fixed Deposit,24229.85,CR,Income
+2024-05-19,NPS Contribution,28509.14,CR,Income
+2024-06-09,FD created,26621.14,CR,Income
+2024-05-14,Salary credited from Infosys,27874.18,CR,Income
+2024-02-16,Pension credited,32160.28,CR,Income
+2024-04-16,Bonus from employer,48619.88,DR,Expense
+2024-03-18,Credit Card Payment,31822.13,DR,Expense
+2024-06-05,Uber Ride,6871.89,CR,Income
+2024-01-31,Transferred to RD Account,24809.65,CR,Income
+2024-03-21,Amazon Purchase,23802.15,CR,Income
+2024-01-23,SIP installment,22727.1,CR,Income
+2024-01-26,SIP installment,39172.55,DR,Expense
+2024-02-04,Invested in Mutual Funds,43411.97,CR,Income
+2024-03-22,Freelance payment from Upwork,48430.66,CR,Income
+2024-03-11,Invested in Mutual Funds,35414.67,DR,Expense
+2024-02-23,EMI payment,46196.57,DR,Expense
+2024-01-15,Dividend from Mutual Fund,38378.51,CR,Income
+2024-06-24,SIP installment,4142.78,CR,Income
+2024-03-16,EMI payment,28779.28,CR,Income
+2024-04-25,NPS Contribution,10777.19,DR,Expense
+2024-01-16,Pension credited,8803.15,DR,Expense
+2024-06-13,Invested in Mutual Funds,7937.82,DR,Expense
+2024-05-19,Zomato Order,9307.83,DR,Expense
+2024-03-04,Mobile Recharge Jio,10440.22,CR,Income
+2024-05-26,Pension credited,13065.23,DR,Expense
+2024-03-30,Rent paid to landlord,28224.09,CR,Income
+2024-02-21,Mobile Recharge Jio,48391.19,CR,Income
+2024-05-08,Bonus from employer,30358.33,DR,Expense
+2024-06-23,Freelance payment from Upwork,25392.16,DR,Expense
+2024-06-06,SIP installment,49073.99,CR,Income
+2024-02-21,Mobile Recharge Jio,47021.11,CR,Income
+2024-06-10,Cashback from Credit Card,32365.78,DR,Expense
+2024-01-27,FD created,14167.73,CR,Income
+2024-01-10,Amazon Purchase,39997.35,CR,Income
+2024-02-06,SIP installment,30423.87,DR,Expense
+2024-03-09,EMI payment,21276.84,DR,Expense
+2024-04-09,NPS Contribution,48730.81,DR,Expense
+2024-06-26,Invested in Mutual Funds,48961.76,CR,Income
+2024-04-09,EMI payment,42584.92,DR,Expense
+2024-02-23,Bonus from employer,35656.9,CR,Income
+2024-06-16,FD created,47041.68,CR,Income
+2024-01-18,Zomato Order,37016.52,DR,Expense
+2024-01-28,Flight Booking,29637.55,CR,Income
+2024-04-22,NPS Contribution,13084.19,DR,Expense
+2024-05-15,Movie Ticket BookMyShow,19405.2,CR,Income
+2024-04-18,Interest received on Fixed Deposit,4414.76,DR,Expense
+2024-03-30,Dividend from Mutual Fund,25215.42,DR,Expense
